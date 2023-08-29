@@ -17,9 +17,13 @@
 <!--        android:icon="@drawable/refresh_icon"/>-->
 
     <!-- action button for copy -->
-    <item android:title="copy"
-        android:id="@+id/copy"
-        android:orderInCategory="100"
-        app:showAsAction="never"
-        />
+<!--    <item android:title="copy"-->
+<!--        android:id="@+id/copy"-->
+<!--        android:orderInCategory="100"-->
+<!--        app:showAsAction="never"-->
+<!--        />-->
+    <item
+        android:id="@+id/isMerge"
+        android:title="Use Merge models"
+        android:checkable="true"/>
 </menu>

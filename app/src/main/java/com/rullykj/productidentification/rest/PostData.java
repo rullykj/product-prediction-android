@@ -14,13 +14,15 @@ public class PostData {
     String requestTime;
     String token;
     String image;
+    boolean isMerge;
 
-    public PostData(int id, String operation, String requestTime, String token, String image) {
+    public PostData(int id, String operation, String requestTime, String token, String image, boolean isMerge) {
         this.id = id;
         this.operation = operation;
         this.requestTime = requestTime;
         this.token = token;
         this.image = image;
+        this.isMerge = isMerge;
     }
 
     public int getId() {
@@ -62,4 +64,13 @@ public class PostData {
     public void setImage(String image) {
         this.image = image;
     }
+
+    public boolean isMerge() {
+        return isMerge;
+    }
+
+    public void setMerge(boolean merge) {
+        isMerge = merge;
+    }
+
 }

@@ -7,11 +7,11 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.os.Build;
 import android.os.Bundle;
-import android.text.method.LinkMovementMethod;
 import android.text.util.Linkify;
 import android.util.Base64;
 import android.util.Log;
 import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
@@ -24,17 +24,25 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import com.google.gson.Gson;
+import com.rullykj.productidentification.ml.Trained202300821Resnet1;
 import com.rullykj.productidentification.rest.PostData;
 import com.rullykj.productidentification.rest.RestClient;
 import com.squareup.picasso.Picasso;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.tensorflow.lite.DataType;
+import org.tensorflow.lite.support.tensorbuffer.TensorBuffer;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 
 import io.reactivex.Single;
 import io.reactivex.android.schedulers.AndroidSchedulers;
@@ -56,11 +64,14 @@ public class MainActivity extends AppCompatActivity implements EasyImage.EasyIma
     private Button bStartCamera;
     private Button bPredict;
     private TextView tvResult;
+    private TextView tvResultLink;
     private ImageView imageView;
     private ArrayList<MediaFile> photos = new ArrayList<>();
     private EasyImage easyImage;
     String encodedImageBase64;
+    boolean isMerge = false;
 
+    boolean isOnline = true;
     private static final String PHOTOS_KEY = "easy_image_photos_list";
     private static final String STATE_KEY = "easy_image_state";
     private static final int CHOOSER_PERMISSIONS_REQUEST_CODE = 7459;
@@ -82,6 +93,22 @@ public class MainActivity extends AppCompatActivity implements EasyImage.EasyIma
     }
 
     @Override
+    public boolean onOptionsItemSelected (MenuItem item)
+    {
+        if (item.getItemId() == R.id.isMerge) {
+            if (item.isChecked()) {
+                item.setChecked(false);
+                isMerge = false;
+            } else {
+                item.setChecked(true);
+                isMerge = true;
+                Toast.makeText(getApplication(), "Use Merge models", Toast.LENGTH_SHORT).show();
+            }
+        }
+        return true;
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
@@ -89,7 +116,7 @@ public class MainActivity extends AppCompatActivity implements EasyImage.EasyIma
         bStartCamera = findViewById(R.id.bStart);
         bPredict = findViewById(R.id.bPredict);
         tvResult = findViewById(R.id.tvResult);
-
+        tvResultLink = findViewById(R.id.tvResultLink);
         imageView = findViewById(R.id.imageView);
 
         if (savedInstanceState != null) {
@@ -222,6 +249,7 @@ public class MainActivity extends AppCompatActivity implements EasyImage.EasyIma
         //mCameraView.setImageBitmap()
         //imagesAdapter.notifyDataSetChanged();
         //recyclerView.scrollToPosition(photos.size() - 1);
+        bPredict.setVisibility(View.VISIBLE);
     }
 
     @NonNull
@@ -256,6 +284,7 @@ public class MainActivity extends AppCompatActivity implements EasyImage.EasyIma
     @Override
     public void onClick(View view) {
         tvResult.setText("");
+        tvResultLink.setText("");
         int id = view.getId();
         if (id == R.id.bStart) {
             if (isLegacyExternalStoragePermissionRequired()) {
@@ -268,52 +297,220 @@ public class MainActivity extends AppCompatActivity implements EasyImage.EasyIma
                 }
             }
         } else if (id == R.id.bPredict) {
-//            Toast.makeText(MainActivity.this,"Predict Button Pressed!", Toast.LENGTH_SHORT).show();
-            Timestamp timestamp = new Timestamp(System.currentTimeMillis());
+            if (!(isOnline)) {
+                predictOffline();
+            } else if (isOnline) {
+                predictOnline();
+            }
+        }
+    }
+
+    private ByteBuffer convertBitmapToByteBuffer(Bitmap bitmap) {
+        int BATCH_SIZE = 1;
+        int inputSize = 224;
+        int PIXEL_SIZE = 3;
+        int IMAGE_MEAN = 128;
+        float IMAGE_STD = 128.0f;
+
+        ByteBuffer byteBuffer;
+        byteBuffer = ByteBuffer.allocateDirect(
+                4 * BATCH_SIZE * inputSize* inputSize * PIXEL_SIZE);
+        byteBuffer.order(ByteOrder.nativeOrder());
+        int[] intValues = new int[inputSize * inputSize];
+        bitmap.getPixels(intValues, 0, bitmap.getWidth(), 0, 0,
+                bitmap.getWidth(), bitmap.getHeight());
+        int pixel = 0;
+        for (int i = 0; i < inputSize; ++i) {
+            for (int j = 0; j < inputSize; ++j) {
+                final int val = intValues[pixel++];
+                byteBuffer.putFloat(
+                        (((val >> 16) & 0xFF)-IMAGE_MEAN)/IMAGE_STD);
+                byteBuffer.putFloat(
+                        (((val >> 8) & 0xFF)-IMAGE_MEAN)/IMAGE_STD);
+                byteBuffer.putFloat((((val) & 0xFF)-IMAGE_MEAN)/IMAGE_STD);
+            }
+        }
+        return byteBuffer;
+    }
+
+    private int argMax(float[] array) {
+        int maxIndex = 0;
+        for (int i=0; i<array.length; i++) {
+            if (array[maxIndex] < array[i]) {
+                maxIndex = i;
+            }
+        }
+
+        return maxIndex;
+    }
+    private void predictOffline(){
+        try {
+            Trained202300821Resnet1 model = Trained202300821Resnet1.newInstance(MainActivity.this);
+
             BitmapDrawable drawable = (BitmapDrawable) imageView.getDrawable();
             Bitmap bitmap = drawable.getBitmap();
             bitmap = Bitmap.createScaledBitmap(bitmap, 224, 224, false);
-            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 100, stream);
-            byte[] byteArray = stream.toByteArray();
-            encodedImageBase64 = Base64.encodeToString(byteArray, Base64.DEFAULT);
-//            Toast.makeText(MainActivity.this, encodedImageBase64.substring(20), Toast.LENGTH_SHORT).show();
-            PostData postData = new PostData(123, "predict", timestamp.toString(), "1234", encodedImageBase64);
-            Gson gson = new Gson();
-            String jsonInString = gson.toJson(postData);
-//            Toast.makeText(MainActivity.this, jsonInString, Toast.LENGTH_SHORT).show();
-            Single<String> single = RestClient.getProductRetrofitService().predict(jsonInString);
-            single.subscribeOn(Schedulers.io())
-                    .observeOn(AndroidSchedulers.mainThread())
-                    .subscribeWith(new DisposableSingleObserver<String>() {
-                        @Override
-                        public void onSuccess(String str) {
-                            //dismissProgressDialog();
-                            // Received
-                            //Toast.makeText(MainActivity.this, str, Toast.LENGTH_SHORT).show();
-//                            textView4.setText(str);
 
-                            try {
-                                JSONObject jObject = new JSONObject(str);
-                                String prediction = jObject.getString("prediction");
-                                str = str + " https://www.ikea.com/gb/en/search/?q=" + prediction;
-                            } catch (JSONException e) {
-                                throw new RuntimeException(e);
-                            }
+            ByteBuffer inputBuffer = convertBitmapToByteBuffer(bitmap);
+//            byte[] byteArray = stream.toByteArray();
 
-                            tvResult.setText(str);
-//                            tvResult.setMovementMethod(LinkMovementMethod.getInstance());
-                            Linkify.addLinks(tvResult, Linkify.ALL);
-                        }
 
-                        @Override
-                        public void onError(Throwable e) {
-                            // Network error
-                            Toast.makeText(MainActivity.this, "Koneksi bermasalah!", Toast.LENGTH_SHORT).show();
-                            //dismissProgressDialog();
-                        }
-                    });
+            // Creates inputs for reference.
+            TensorBuffer inputFeature0 = TensorBuffer.createFixedSize(new int[]{1, 224, 224, 3}, DataType.FLOAT32);
+            inputFeature0.loadBuffer(inputBuffer);
+
+            // Runs model inference and gets result.
+            Trained202300821Resnet1.Outputs outputs = model.process(inputFeature0);
+            TensorBuffer outputFeature0 = outputs.getOutputFeature0AsTensorBuffer();
+            float[] data1 = outputFeature0.getFloatArray();
+            String result = "";
+            for (int i=0; i<data1.length; i++) {
+                result+=", " + data1[i];
+            }
+            tvResult.setText(result);
+
+            // Releases model resources if no longer used.
+            model.close();
+        } catch (IOException e) {
+            // TODO Handle the exception
+        }
+    }
+
+    public int argmax(ArrayList<Double> array) {
+        double max = array.get(0);
+        int re = 0;
+        for (int i = 1; i < array.size(); i++) {
+            if (array.get(i) > max) {
+                max = array.get(i);
+                re = i;
+            }
+        }
+        return re;
+    }
+
+    public Integer[] sortIndices(ArrayList<Double> input){
+
+        Integer [] indices = new Integer[input.size()];
+//        double [] output = new double[input.size()];
+
+        for (int i = 0; i <input.size() ; i++) {
+            indices[i] = i;
+//            output[i] = input.get(i);
         }
 
+        Arrays.sort(indices, new Comparator<Integer>() {
+            @Override
+            public int compare(Integer o1, Integer o2) {
+                return Double.compare(input.get(o2), input.get(o1));
+            }
+        });
+
+//        Arrays.sort(indices, new Comparator<Integer>() {
+//            @Override
+//            public int compare(Integer o1, Integer o2) {
+//                return Double.compare(input.get(o1), input.get(o2));
+//            }
+//        });
+
+//        System.out.println("Input Array: " + Arrays.toString(input));
+//        System.out.println("Sorted indices as per input array: " + Arrays.toString(indices));
+        return indices;
+    }
+
+    private void predictOnline(){
+        //            Toast.makeText(MainActivity.this,"Predict Button Pressed!", Toast.LENGTH_SHORT).show();
+        Timestamp timestamp = new Timestamp(System.currentTimeMillis());
+        BitmapDrawable drawable = (BitmapDrawable) imageView.getDrawable();
+        Bitmap bitmap = drawable.getBitmap();
+        bitmap = Bitmap.createScaledBitmap(bitmap, 224, 224, false);
+        ByteArrayOutputStream stream = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 100, stream);
+        byte[] byteArray = stream.toByteArray();
+        encodedImageBase64 = Base64.encodeToString(byteArray, Base64.DEFAULT);
+//            Toast.makeText(MainActivity.this, encodedImageBase64.substring(20), Toast.LENGTH_SHORT).show();
+        PostData postData = new PostData(123, "predict", timestamp.toString(), "1234", encodedImageBase64, isMerge);
+        Gson gson = new Gson();
+        String jsonInString = gson.toJson(postData);
+//            Toast.makeText(MainActivity.this, jsonInString, Toast.LENGTH_SHORT).show();
+        Single<String> single = RestClient.getProductRetrofitService().predict(jsonInString);
+        single.subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribeWith(new DisposableSingleObserver<String>() {
+                    @Override
+                    public void onSuccess(String str) {
+                        //dismissProgressDialog();
+                        // Received
+                        //Toast.makeText(MainActivity.this, str, Toast.LENGTH_SHORT).show();
+//                            textView4.setText(str);
+                        String output = "";
+                        String outputLink = "";
+                        try {
+                            JSONObject jObject = new JSONObject(str);
+                            String prediction = jObject.getString("prediction");
+                            JSONArray jArrayProduct = jObject.getJSONArray("product");
+                            JSONArray jArrayBrand = jObject.getJSONArray("brand");
+                            JSONArray jArrayProductLabels = jObject.getJSONArray("product_labels");
+                            JSONArray jArrayBrandLabels = jObject.getJSONArray("brand_labels");
+                            ArrayList<Double> listdata = new ArrayList<>();
+                            ArrayList<Double> listdataBrand = new ArrayList<>();
+                            JSONArray jArrayScore = jArrayProduct.getJSONArray(0).getJSONArray(0);
+                            if (jArrayScore != null) {
+                                for (int i=0;i<jArrayScore.length();i++){
+                                    listdata.add(jArrayScore.getDouble(i));
+                                }
+                            }
+                            JSONArray jArrayBrandScore = jArrayBrand.getJSONArray(0).getJSONArray(0);
+                            if (jArrayBrandScore != null) {
+                                for (int i=0;i<jArrayBrandScore.length();i++){
+                                    listdataBrand.add(jArrayBrandScore.getDouble(i));
+                                }
+                            }
+                            Integer[] indices = sortIndices(listdata);
+                            Integer[] brandIndices = sortIndices(listdataBrand);
+                            output = jArrayProductLabels.getString(indices[0]).toUpperCase()+" : "+String.format("%.2f", (jArrayScore.getDouble(indices[0])*100
+                            )) +"%"+System.getProperty("line.separator")+
+                                    jArrayProductLabels.getString(indices[1]).toUpperCase()+" : "+String.format("%.2f", (jArrayScore.getDouble(indices[1])*100
+                            )) +"%"+System.getProperty("line.separator")+
+                                    jArrayProductLabels.getString(indices[2]).toUpperCase()+" : "+String.format("%.2f", (jArrayScore.getDouble(indices[2])*100
+                            )) +"%"+System.getProperty("line.separator")+System.getProperty("line.separator")+ "BRAND : "+ System.getProperty("line.separator")+
+                                    jArrayBrandLabels.getString(brandIndices[0]).toUpperCase()+" : "+String.format("%.2f", (jArrayBrandScore.getDouble(brandIndices[0])*100
+                            )) +"%"+System.getProperty("line.separator")+
+                                    jArrayBrandLabels.getString(brandIndices[1]).toUpperCase()+" : "+String.format("%.2f", (jArrayBrandScore.getDouble(brandIndices[1])*100
+                            )) +"%"+System.getProperty("line.separator");
+
+                            if(brandIndices[0] == 0){
+                                outputLink = "https://www.ikea.com/gb/en/search/?q=";
+                            }else{
+                                outputLink = "https://www.ruparupa.com/informastore/jual/";
+                            }
+                            if(indices[0] == 3){
+                                if(brandIndices[0] == 0){
+                                    outputLink = outputLink+"swivel%20chair";
+                                }else{
+                                    outputLink = outputLink+"swivel-chair";
+                                }
+                            }else{
+                                outputLink = outputLink+jArrayProductLabels.getString(indices[0]);
+                            }
+
+//                            str = ""+indices;
+//                            str = str + " https://www.ikea.com/gb/en/search/?q=" + prediction;
+                        } catch (JSONException e) {
+                            throw new RuntimeException(e);
+                        }
+
+                        tvResult.setText(output);
+                        tvResultLink.setText(outputLink);
+//                            tvResult.setMovementMethod(LinkMovementMethod.getInstance());
+                        Linkify.addLinks(tvResultLink, Linkify.ALL);
+                    }
+
+                    @Override
+                    public void onError(Throwable e) {
+                        // Network error
+                        Toast.makeText(MainActivity.this, "Koneksi bermasalah!", Toast.LENGTH_SHORT).show();
+                        //dismissProgressDialog();
+                    }
+                });
     }
 }
